@@ -24,20 +24,18 @@ var CACHE_DIR string = "/tmp/"
 
 type Collector struct {
 	Meta struct {
-		ID      string `toml:"id" json:"id"`
-		Name    string `toml:"name" json:"name"`
-		Feature string `toml:"feature" json:"feature"`
+		ID        string `toml:"id" json:"id"`
+		Name      string `toml:"name" json:"name"`
+		Feature   string `toml:"feature" json:"feature"`
+		Frequency uint   `toml:"frequency" json:"frequency"`
 	} `toml:"meta" json:"meta"`
 	Exec struct {
 		Command     string `toml:"command" json:"command"`
 		ContentType string `toml:"content_type" json:"content_type"`
 		UID         uint   `toml:"uid" json:"uid"`
 		GID         uint   `toml:"gid" json:"gid"`
+		Timeout     uint   `toml:"timeout" json:"timeout"`
 	} `toml:"exec" json:"exec"`
-	Systemd struct {
-		Service string `toml:"service" json:"service"`
-		Timer   string `toml:"timer" json:"timer"`
-	} `toml:"systemd" json:"systemd"`
 	Generated struct {
 		Path string `toml:"path" json:"path"`
 	}

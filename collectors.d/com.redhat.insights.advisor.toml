@@ -2,13 +2,11 @@
 id = "com.redhat.insights.advisor"
 name = "Red Hat Insights Advisor"
 feature = "analytics"
+frequency = 86400
 
 [exec]
 command = "./_mock/org.example.mock"
 content_type = "application/vnd.redhat.advisor.mock+tar.xz"
 uid = 0
 gid = 0
-
-[systemd]
-service = "insights-core.service"
-timer = "insights-core.timer"
+timeout = 600

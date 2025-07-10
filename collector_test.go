@@ -19,7 +19,7 @@ func TestParseCollector(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
-			actual, err := newCollectorFromConfiguration(tt.blob)
+			actual, err := newCollectorFromConfiguration("/tmp/mock.toml", tt.blob)
 			if err != nil {
 				t.Errorf("'%s': got '%v'", tt.id, err)
 			}

@@ -183,12 +183,12 @@ type CollectorInfoDTO struct {
 	Name           string `json:"name"`
 	Feature        string `json:"feature"`
 	Command        string `json:"command"`
-	ContentType    string `json:"content-type"`
+	ContentType    string `json:"content_type"`
 	UID            uint   `json:"uid"`
 	GID            uint   `json:"gid"`
 	DefinitionPath string `json:"path"`
-	SystemdService string `json:"systemd-service"`
-	SystemdTimer   string `json:"systemd-timer"`
+	Frequency      uint   `json:"frequency"`
+	Timeout        uint   `json:"timeout"`
 }
 
 func NewCollectorInfoDTO(collector Collector) (CollectorInfoDTO, error) {
@@ -196,13 +196,13 @@ func NewCollectorInfoDTO(collector Collector) (CollectorInfoDTO, error) {
 	dto.ID = collector.Meta.ID
 	dto.Name = collector.Meta.Name
 	dto.Feature = collector.Meta.Feature
+	dto.Frequency = collector.Meta.Frequency
 	dto.Command = collector.Exec.Command
 	dto.ContentType = collector.Exec.ContentType
 	dto.UID = collector.Exec.UID
 	dto.GID = collector.Exec.GID
 	dto.DefinitionPath = collector.Generated.Path
-	dto.SystemdService = collector.Systemd.Service
-	dto.SystemdTimer = collector.Systemd.Timer
+	dto.Timeout = collector.Exec.Timeout
 	return dto, nil
 }
 

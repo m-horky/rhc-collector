@@ -21,7 +21,7 @@ func Compress(directory string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		slog.Error("compression failed", slog.Any("error", err))
+		slog.Error("compression failed", slog.Any("error", err), slog.Any("stderr", cmd.Stderr))
 		return "", errors.New("compression failed")
 	}
 
