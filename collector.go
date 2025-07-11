@@ -22,6 +22,9 @@ var COLLECTIONS_DIR_PERMISSIONS os.FileMode = 0750
 var COLLECTIONS_DIR_ENVVAR = "COLLECTION_DIRECTORY"
 var CACHE_DIR string = "/tmp/"
 
+// TODO Frequency and Timeout should be parsed as string and
+//  opportunistically converted to number of seconds.
+
 type Collector struct {
 	Meta struct {
 		ID        string `toml:"id" json:"id"`
@@ -37,7 +40,7 @@ type Collector struct {
 		Timeout     uint   `toml:"timeout" json:"timeout"`
 	} `toml:"exec" json:"exec"`
 	Generated struct {
-		Path string `toml:"path" json:"path"`
+		Path string
 	}
 }
 
@@ -151,29 +154,5 @@ func Collect(collector *Collector) (string, error) {
 		return "", fmt.Errorf("could not run collector: %v", err)
 	}
 
-	if err = collector.SetLastRun(); err != nil {
-		slog.Error("cannot update collection timestamp", "id", collector.Meta.ID, "err", err)
-	}
-
 	return tempdir, nil
-}
-
-func (c *Collector) SetLastRun() error {
-	now := strconv.FormatInt(time.Now().Unix(), 10)
-	err := os.WriteFile(filepath.Join(CACHE_DIR, c.Meta.ID+".last-run"), []byte(now), 0644)
-	return err
-}
-
-func (c *Collector) GetLastRun() (time.Time, error) {
-	file := filepath.Join(CACHE_DIR, c.Meta.ID+".last-run")
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		return time.Time{}, err
-	}
-	i, err := strconv.ParseInt(string(raw), 10, 64)
-	if err != nil {
-		slog.Warn("cannot parse timestamp", "file", file, "err", err)
-		return time.Time{}, err
-	}
-	return time.Unix(i, 0), nil
 }

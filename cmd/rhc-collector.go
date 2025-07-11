@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,6 +81,7 @@ func init() {
 }
 
 var ErrorNotImplemented = fmt.Errorf("not implemented")
+var ErrorNotRegistered = fmt.Errorf("this system is not registered")
 
 func main() {
 	// TODO Bash completion for collectors and flags
@@ -169,9 +172,10 @@ func main() {
 		},
 	}
 
-	slog.Info("starting", slog.String("args", strings.Join(os.Args, " ")))
+	slog.Info("initiated")
+	slog.Info("", slog.String("args", strings.Join(os.Args, " ")))
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
-		fmt.Println(err)
+		fmt.Printf("Fatal error: %s\n", err)
 		os.Exit(1)
 	}
 	slog.Info("done")
@@ -189,9 +193,11 @@ type CollectorInfoDTO struct {
 	DefinitionPath string `json:"path"`
 	Frequency      uint   `json:"frequency"`
 	Timeout        uint   `json:"timeout"`
+	LastStarted    uint   `json:"last_started"`
+	LastFinished   uint   `json:"last_finished"`
 }
 
-func NewCollectorInfoDTO(collector Collector) (CollectorInfoDTO, error) {
+func NewCollectorInfoDTO(collector *Collector) (CollectorInfoDTO, error) {
 	dto := CollectorInfoDTO{}
 	dto.ID = collector.Meta.ID
 	dto.Name = collector.Meta.Name
@@ -203,6 +209,21 @@ func NewCollectorInfoDTO(collector Collector) (CollectorInfoDTO, error) {
 	dto.GID = collector.Exec.GID
 	dto.DefinitionPath = collector.Generated.Path
 	dto.Timeout = collector.Exec.Timeout
+	dto.DefinitionPath = collector.Generated.Path
+	dto.Timeout = collector.Exec.Timeout
+	{
+		lastStarted, err := getLastStarted(collector)
+		if err == nil {
+			dto.LastStarted = uint(lastStarted.Unix())
+		}
+	}
+	{
+		lastFinished, err := getLastFinished(collector)
+		if err == nil {
+			dto.LastFinished = uint(lastFinished.Unix())
+		}
+	}
+
 	return dto, nil
 }
 
@@ -213,7 +234,7 @@ func doInfo(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	dto, err := NewCollectorInfoDTO(*collector)
+	dto, err := NewCollectorInfoDTO(collector)
 	if err != nil {
 		slog.Error("could not parse collector", "error", err)
 	}
@@ -249,7 +270,7 @@ func doList(ctx context.Context, cmd *cli.Command) error {
 
 	dtos := make([]*CollectorInfoDTO, len(collectors))
 	for i, collector := range collectors {
-		dto, err := NewCollectorInfoDTO(*collector)
+		dto, err := NewCollectorInfoDTO(collector)
 		if err != nil {
 			slog.Error("could not parse collector", "error", err)
 			continue
@@ -296,15 +317,24 @@ type CollectorRunDTO struct {
 }
 
 func doRun(ctx context.Context, cmd *cli.Command) error {
+	if err := doErrorOnMissingIdentity(); err != nil {
+		slog.Debug("aborting 'run' command", slog.Any("error", err))
+		return err
+	}
+
 	collector, err := GetCollector(cmd.StringArgs("collector")[0])
 	if err != nil {
 		slog.Error("could not find collector", "error", err)
 		return err
 	}
-	collectorInfo, err := NewCollectorInfoDTO(*collector)
+	collectorInfo, err := NewCollectorInfoDTO(collector)
 	if err != nil {
 		slog.Error("could not parse collector", "error", err)
 		return err
+	}
+
+	if err = setLastStarted(collector); err != nil {
+		slog.Error("cannot update collection timestamp", "id", collector.Meta.ID, "err", err)
 	}
 
 	keep := cmd.Bool("keep") || cmd.Bool("no-upload")
@@ -366,6 +396,10 @@ func doRun(ctx context.Context, cmd *cli.Command) error {
 		dto.KeepPath = tempdir
 	}
 
+	if err = setLastFinished(collector); err != nil {
+		slog.Error("cannot update collection timestamp", "id", collector.Meta.ID, "err", err)
+	}
+
 	switch cmd.Value("format") {
 	case "json":
 		return printRunJSON(dto)
@@ -419,7 +453,7 @@ func doPsHuman(ctx context.Context, cmd *cli.Command) error {
 	tbl := table.New("ID", "LAST", "NEXT")
 	for _, collector := range collectors {
 		var last string
-		lastTimestamp, err := collector.GetLastRun()
+		lastTimestamp, err := getLastStarted(collector)
 		if err != nil {
 			last = "-"
 		} else {
@@ -445,4 +479,67 @@ func doEnable(ctx context.Context, cmd *cli.Command) error {
 func doDisable(ctx context.Context, cmd *cli.Command) error {
 	// TODO If we are not root, pass --user
 	return ErrorNotImplemented
+}
+
+func doErrorOnMissingIdentity() error {
+	_, err := os.Stat("/etc/pki/consumer/cert.pem")
+	if err != nil {
+		fmt.Println("This system is not registered, run 'rhc connect' before continuing.")
+		return ErrorNotRegistered
+	}
+	return nil
+}
+
+func setLastStarted(c *Collector) error {
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	path := filepath.Join(CACHE_DIR, c.Meta.ID+".last-started")
+	err := os.WriteFile(path, []byte(now), 0644)
+	if err == nil {
+		slog.Debug("cached last started timestamp", "path", path)
+	} else {
+		slog.Error("could not cache timestamp", "path", path, "error", err)
+	}
+	return err
+}
+
+func getLastStarted(c *Collector) (time.Time, error) {
+	file := filepath.Join(CACHE_DIR, c.Meta.ID+".last-started")
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		slog.Debug("cannot parse timestamp", "file", file, "err", err)
+		return time.Time{}, err
+	}
+	i, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		slog.Warn("cannot parse timestamp", "file", file, "err", err)
+		return time.Time{}, err
+	}
+	return time.Unix(i, 0), nil
+}
+
+func setLastFinished(c *Collector) error {
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	path := filepath.Join(CACHE_DIR, c.Meta.ID+".last-finished")
+	err := os.WriteFile(path, []byte(now), 0644)
+	if err == nil {
+		slog.Debug("cached last finished timestamp", "path", path)
+	} else {
+		slog.Error("could not cache timestamp", "path", path, "error", err)
+	}
+	return err
+}
+
+func getLastFinished(c *Collector) (time.Time, error) {
+	file := filepath.Join(CACHE_DIR, c.Meta.ID+".last-finished")
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		slog.Debug("cannot parse timestamp", "file", file, "err", err)
+		return time.Time{}, err
+	}
+	i, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		slog.Warn("cannot parse timestamp", "file", file, "err", err)
+		return time.Time{}, err
+	}
+	return time.Unix(i, 0), nil
 }
