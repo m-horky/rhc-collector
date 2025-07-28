@@ -22,8 +22,6 @@ import (
 )
 
 func init() {
-	CONFIGURATIONS_DIR = "./collectors.d/"
-
 	{
 		// TODO Log into a file
 		// Configure logging
@@ -186,31 +184,31 @@ type CollectorInfoDTO struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Feature        string `json:"feature"`
+	Method         string `json:"method"`
 	Command        string `json:"command"`
 	ContentType    string `json:"content_type"`
-	UID            uint   `json:"uid"`
-	GID            uint   `json:"gid"`
+	User           string `json:"user"`
+	Group          string `json:"group"`
 	DefinitionPath string `json:"path"`
-	Frequency      uint   `json:"frequency"`
-	Timeout        uint   `json:"timeout"`
 	LastStarted    uint   `json:"last_started"`
 	LastFinished   uint   `json:"last_finished"`
+	NextStart      uint   `json:"next_start"`
 }
 
 func NewCollectorInfoDTO(collector *Collector) (CollectorInfoDTO, error) {
 	dto := CollectorInfoDTO{}
-	dto.ID = collector.Meta.ID
-	dto.Name = collector.Meta.Name
-	dto.Feature = collector.Meta.Feature
-	dto.Frequency = collector.Meta.Frequency
-	dto.Command = collector.Exec.Command
-	dto.ContentType = collector.Exec.ContentType
-	dto.UID = collector.Exec.UID
-	dto.GID = collector.Exec.GID
-	dto.DefinitionPath = collector.Generated.Path
-	dto.Timeout = collector.Exec.Timeout
-	dto.DefinitionPath = collector.Generated.Path
-	dto.Timeout = collector.Exec.Timeout
+	dto.ID = collector.ID
+	dto.Name = collector.Config.Meta.Name
+	dto.Feature = collector.Config.Meta.Feature
+	dto.Method = collector.Config.Exec.Method
+	if command, err := collector.GetCommand(); err == nil {
+		dto.Command = command
+	}
+	if collector.Config.Exec.Method == "archive" {
+		dto.ContentType = collector.Config.MethodArchive.ContentType
+	}
+	dto.User = collector.Config.Exec.User
+	dto.Group = collector.Config.Exec.Group
 	{
 		lastStarted, err := getLastStarted(collector)
 		if err == nil {
@@ -258,7 +256,31 @@ func printInfoJSON(dto *CollectorInfoDTO) error {
 }
 
 func printInfoHuman(dto *CollectorInfoDTO) error {
-	return ErrorNotImplemented
+	tbl := table.New("ID", dto.ID)
+	tbl.AddRow("Name", dto.Name)
+	if dto.Feature != "" {
+		tbl.AddRow("Feature", dto.Feature)
+	}
+	tbl.AddRow()
+	tbl.AddRow("Command", dto.Command)
+	if dto.Method == "archive" {
+		tbl.AddRow("Content-Type", dto.ContentType)
+	}
+	if dto.Method == "custom" {
+		tbl.AddRow("Method", "custom")
+	}
+	if dto.User != "" {
+		tbl.AddRow("Execution user", dto.User)
+	}
+	if dto.Group != "" {
+		tbl.AddRow("Execution group", dto.Group)
+	}
+	tbl.AddRow()
+	tbl.AddRow("Last started", dto.LastStarted)
+	tbl.AddRow("Last finished", dto.LastFinished)
+	tbl.AddRow("Next start", dto.NextStart)
+	tbl.Print()
+	return nil
 }
 
 func doList(ctx context.Context, cmd *cli.Command) error {
@@ -334,7 +356,7 @@ func doRun(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if err = setLastStarted(collector); err != nil {
-		slog.Error("cannot update collection timestamp", "id", collector.Meta.ID, "err", err)
+		slog.Error("cannot update collection timestamp", "id", collector.ID, "err", err)
 	}
 
 	keep := cmd.Bool("keep") || cmd.Bool("no-upload")
@@ -344,7 +366,7 @@ func doRun(ctx context.Context, cmd *cli.Command) error {
 	collectStart := time.Now()
 	tempdir, err := Collect(collector)
 	collectDelta := time.Since(collectStart).Seconds()
-	slog.Debug("execution finished", "collector", collector.Meta.ID, "time", collectDelta)
+	slog.Debug("execution finished", "collector", collector.ID, "time", collectDelta)
 
 	defer func() {
 		if keep {
@@ -378,7 +400,7 @@ func doRun(ctx context.Context, cmd *cli.Command) error {
 		}()
 
 		uploadSince := time.Now()
-		err = Upload(archive, collector.Exec.ContentType)
+		err = Upload(archive, collector.Config.MethodArchive.ContentType)
 		uploadDelta = time.Since(uploadSince).Seconds()
 		if err != nil {
 			return err
@@ -397,7 +419,7 @@ func doRun(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if err = setLastFinished(collector); err != nil {
-		slog.Error("cannot update collection timestamp", "id", collector.Meta.ID, "err", err)
+		slog.Error("cannot update collection timestamp", "id", collector.ID, "err", err)
 	}
 
 	switch cmd.Value("format") {
@@ -460,25 +482,36 @@ func doPsHuman(ctx context.Context, cmd *cli.Command) error {
 			// TODO Show as relative: 3h 47m
 			last = lastTimestamp.Format(time.RFC3339)
 		}
-		tbl.AddRow(collector.Meta.ID, last, "")
+		tbl.AddRow(collector.ID, last, "-")
 	}
 	tbl.Print()
 
 	fmt.Println()
 	fmt.Println("Hint: Run 'rhc collector info COLLECTOR' to show more details.")
 
-	// TODO If we are not root, pass --user
 	return nil
 }
 
 func doEnable(ctx context.Context, cmd *cli.Command) error {
-	// TODO If we are not root, pass --user
-	return ErrorNotImplemented
+	collector, err := GetCollector(cmd.StringArgs("collector")[0])
+	if err != nil {
+		slog.Error("could not find collector", "error", err)
+		return err
+	}
+
+	fmt.Printf("systemctl enable --now rhc-collector-%s.timer\n", collector.ID)
+	return nil
 }
 
 func doDisable(ctx context.Context, cmd *cli.Command) error {
-	// TODO If we are not root, pass --user
-	return ErrorNotImplemented
+	collector, err := GetCollector(cmd.StringArgs("collector")[0])
+	if err != nil {
+		slog.Error("could not find collector", "error", err)
+		return err
+	}
+
+	fmt.Printf("systemctl disable --now rhc-collector-%s.timer\n", collector.ID)
+	return nil
 }
 
 func doErrorOnMissingIdentity() error {
@@ -490,9 +523,11 @@ func doErrorOnMissingIdentity() error {
 	return nil
 }
 
+var CACHE_DIR = "/var/cache/"
+
 func setLastStarted(c *Collector) error {
 	now := strconv.FormatInt(time.Now().Unix(), 10)
-	path := filepath.Join(CACHE_DIR, c.Meta.ID+".last-started")
+	path := filepath.Join(CACHE_DIR, c.ID+".last-started")
 	err := os.WriteFile(path, []byte(now), 0644)
 	if err == nil {
 		slog.Debug("cached last started timestamp", "path", path)
@@ -503,7 +538,7 @@ func setLastStarted(c *Collector) error {
 }
 
 func getLastStarted(c *Collector) (time.Time, error) {
-	file := filepath.Join(CACHE_DIR, c.Meta.ID+".last-started")
+	file := filepath.Join(CACHE_DIR, c.ID+".last-started")
 	raw, err := os.ReadFile(file)
 	if err != nil {
 		slog.Debug("cannot parse timestamp", "file", file, "err", err)
@@ -519,7 +554,7 @@ func getLastStarted(c *Collector) (time.Time, error) {
 
 func setLastFinished(c *Collector) error {
 	now := strconv.FormatInt(time.Now().Unix(), 10)
-	path := filepath.Join(CACHE_DIR, c.Meta.ID+".last-finished")
+	path := filepath.Join(CACHE_DIR, c.ID+".last-finished")
 	err := os.WriteFile(path, []byte(now), 0644)
 	if err == nil {
 		slog.Debug("cached last finished timestamp", "path", path)
@@ -530,7 +565,7 @@ func setLastFinished(c *Collector) error {
 }
 
 func getLastFinished(c *Collector) (time.Time, error) {
-	file := filepath.Join(CACHE_DIR, c.Meta.ID+".last-finished")
+	file := filepath.Join(CACHE_DIR, c.ID+".last-finished")
 	raw, err := os.ReadFile(file)
 	if err != nil {
 		slog.Debug("cannot parse timestamp", "file", file, "err", err)

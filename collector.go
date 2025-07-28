@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -16,110 +15,97 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-var CONFIGURATIONS_DIR string = "."
-var COLLECTIONS_DIR string = "/tmp/"
-var COLLECTIONS_DIR_PERMISSIONS os.FileMode = 0750
-var COLLECTIONS_DIR_ENVVAR = "COLLECTION_DIRECTORY"
-var CACHE_DIR string = "/tmp/"
+var COLLECTOR_EXECUTABLE_DIR = "./collectors/"
+var COLLECTOR_CONFIGURATION_DIR = "./collector.d/"
+var COLLECTION_DIR = "/tmp/"
+var COLLECTION_DIR_PERMISSION os.FileMode = 0o750
 
-// TODO Frequency and Timeout should be parsed as string and
-//  opportunistically converted to number of seconds.
+type CollectorConfig struct {
+	Meta struct {
+		Name    string `toml:"name"`
+		Feature string `toml:"feature"`
+	} `toml:"meta"`
+	Exec struct {
+		Method string `toml:"method" `
+		User   string `toml:"user"`
+		Group  string `toml:"group"`
+	} `toml:"exec"`
+	MethodArchive struct {
+		ContentType string `toml:"content_type"`
+	} `toml:"archive"`
+	MethodCustom struct {
+		Command string `toml:"command"`
+	} `toml:"custom"`
+}
 
 type Collector struct {
-	Meta struct {
-		ID        string `toml:"id" json:"id"`
-		Name      string `toml:"name" json:"name"`
-		Feature   string `toml:"feature" json:"feature"`
-		Frequency uint   `toml:"frequency" json:"frequency"`
-	} `toml:"meta" json:"meta"`
-	Exec struct {
-		Command     string `toml:"command" json:"command"`
-		ContentType string `toml:"content_type" json:"content_type"`
-		UID         uint   `toml:"uid" json:"uid"`
-		GID         uint   `toml:"gid" json:"gid"`
-		Timeout     uint   `toml:"timeout" json:"timeout"`
-	} `toml:"exec" json:"exec"`
-	Generated struct {
-		Path string
-	}
+	ID     string
+	Config CollectorConfig
 }
 
-// newCollectorFromPath loads a collector definition from path.
-func newCollectorFromPath(path string) (*Collector, error) {
-	path, _ = filepath.Abs(path)
-	_, err := os.Stat(path)
-	if err != nil {
-		slog.Error("no such collector", "path", path)
-		return nil, errors.New("no such collector")
+func (c *Collector) GetCommand() (string, error) {
+	switch c.Config.Exec.Method {
+	case "archive":
+		return filepath.Abs(filepath.Join(COLLECTOR_EXECUTABLE_DIR, c.ID))
+	case "custom":
+		return c.Config.MethodCustom.Command, nil
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		slog.Error("cannot read collector configuration", "path", path)
-		return nil, fmt.Errorf("cannot read collector configuration from '%s'", path)
-	}
-	return newCollectorFromConfiguration(path, string(data))
+	return "", errors.New("unknown execution method")
 }
 
-// newCollectorFromConfiguration parses the content of the configuration file into Collector.
-func newCollectorFromConfiguration(path, config string) (*Collector, error) {
-	var cc Collector
-	_, err := toml.Decode(config, &cc)
-	if err != nil {
-		slog.Error("cannot parse collector configuration", "path", path)
-		return nil, fmt.Errorf("cannot parse collector configuration")
-	}
-
-	slog.Debug("collector parsed", "id", cc.Meta.ID, "path", path)
-	cc.Generated.Path = path
-	return &cc, nil
-}
-
-// ensureCollectorsDirectory raises an error if CONFIGURATIONS_DIR does not exist.
-func ensureCollectorsDirectory() error {
-	if _, err := os.Stat(CONFIGURATIONS_DIR); os.IsNotExist(err) {
-		log.Printf("configuration directory '%s' not found", CONFIGURATIONS_DIR)
-		return fmt.Errorf("configuration directory '%s' not found", CONFIGURATIONS_DIR)
-	}
-	return nil
-}
-
-// GetCollector loads collector definition from CONFIGURATIONS_DIR.
 func GetCollector(id string) (*Collector, error) {
-	if err := ensureCollectorsDirectory(); err != nil {
+	path := filepath.Join(COLLECTOR_CONFIGURATION_DIR, id+".toml")
+	config, err := getCollectorConfigFromPath(path)
+	if err != nil {
 		return nil, err
 	}
-	return newCollectorFromPath(filepath.Join(CONFIGURATIONS_DIR, id+".toml"))
+	collector := &Collector{ID: id, Config: *config}
+	return collector, nil
 }
 
-// GetCollectors loads collector definitions from CONFIGURATIONS_DIR.
 func GetCollectors() ([]*Collector, error) {
-	if err := ensureCollectorsDirectory(); err != nil {
+	var collectors []*Collector
+	files, err := os.ReadDir(COLLECTOR_CONFIGURATION_DIR)
+	if err != nil {
 		return nil, err
 	}
 
-	configurations, err := filepath.Glob(filepath.Join(CONFIGURATIONS_DIR, "*"))
-	if err != nil {
-		log.Printf("cannot scan %s", CONFIGURATIONS_DIR)
-		return nil, fmt.Errorf("cannot scan %s", CONFIGURATIONS_DIR)
-	}
-
-	var collectors []*Collector
-	for _, file := range configurations {
-		config, err := newCollectorFromPath(file)
-		if err != nil {
-			log.Printf("collector '%s' is malformed, skipping: %v", file, err)
-			continue
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".toml" {
+			id := strings.TrimSuffix(file.Name(), ".toml")
+			config, err := getCollectorConfigFromPath(filepath.Join(COLLECTOR_CONFIGURATION_DIR, file.Name()))
+			if err != nil {
+				slog.Warn("found invalid collector", "err", err)
+				continue
+			}
+			collector := &Collector{ID: id, Config: *config}
+			collectors = append(collectors, collector)
 		}
-		collectors = append(collectors, config)
 	}
 	return collectors, nil
 }
 
+func getCollectorConfigFromPath(path string) (*CollectorConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return getCollectorConfigFromString(string(data))
+}
+
+func getCollectorConfigFromString(raw string) (*CollectorConfig, error) {
+	var c CollectorConfig
+	_, err := toml.Decode(raw, &c)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 func generateCollectionDirectory(collector *Collector) (string, error) {
-	path := filepath.Join(COLLECTIONS_DIR, collector.Meta.ID+"-"+strconv.FormatInt(time.Now().Unix(), 10))
-	if err := os.MkdirAll(path, COLLECTIONS_DIR_PERMISSIONS); err != nil {
-		slog.Error("cannot create collector directory", "id", collector.Meta.ID, "err", "err")
+	path := filepath.Join(COLLECTION_DIR, collector.ID+"-"+strconv.FormatInt(time.Now().Unix(), 10))
+	if err := os.MkdirAll(path, COLLECTION_DIR_PERMISSION); err != nil {
+		slog.Error("cannot create collector directory", "id", collector.ID, "err", err)
 		return "", fmt.Errorf("cannot create collector directory")
 	}
 	slog.Debug("generated collection directory", "path", path)
@@ -130,10 +116,11 @@ func generateCollectionDirectory(collector *Collector) (string, error) {
 //
 // Returns path to the temporary directory, where the data has been dumped, or an error.
 func Collect(collector *Collector) (string, error) {
-	cmd := exec.Command(
-		strings.Split(collector.Exec.Command, " ")[0],
-		strings.Split(collector.Exec.Command, " ")[1:]...,
-	)
+	argv0, err := collector.GetCommand()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(argv0, "collect")
 	for _, variable := range os.Environ() {
 		cmd.Env = append(cmd.Env, variable)
 	}
@@ -141,7 +128,7 @@ func Collect(collector *Collector) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd.Env = append(cmd.Env, COLLECTIONS_DIR_ENVVAR+"="+tempdir)
+	cmd.Dir = tempdir
 
 	var stdoutBuffer, stderrBuffer bytes.Buffer
 	cmd.Stdout = &stdoutBuffer

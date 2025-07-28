@@ -1,0 +1,11 @@
+[meta]
+name = "Red Hat Lightspeed Advisor"
+feature = "analytics"
+
+[exec]
+method = "archive"
+user = "root"
+group = "root"
+
+[archive]
+content_type = "application/vnd.redhat.advisor.mock+tar.xz"

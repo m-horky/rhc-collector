@@ -1,0 +1,16 @@
+#!/bin/bash
+set -eo pipefail
+
+COMMAND="${1:-help}"
+case "$COMMAND" in
+	"version")
+		echo "dev"
+		;;
+	"collect")
+		date +%Y-%m-%d--%H:%M:%S > "./date"
+		whoami > "./whoami"
+		;;
+	*)
+		echo "Usage: $0 [ version | command ]"
+		;;
+esac

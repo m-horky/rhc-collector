@@ -1,0 +1,9 @@
+[meta]
+name = "Red Hat Subscriptions"
+feature = "content"
+
+[exec]
+method = "custom"
+
+[custom]
+command = "/usr/sbin/rhsmcertd-worker"
